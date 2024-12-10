@@ -57,6 +57,7 @@ sys_sleep(void)
 {
   int n;
   uint ticks0;
+  backtrace();
 
   if(argint(0, &n) < 0)
     return -1;
@@ -94,4 +95,30 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64 sys_sigalarm()
+{
+struct proc* proc = myproc();
+  int interval;
+  uint64 f_addr;
+
+  if (argint(0, &interval) < 0) return -1;
+  if (argaddr(1,&f_addr) < 0) return -1;
+  
+  // 间隔一段时间，调用handler函数
+  // 修改进程中的字段
+  proc->interval = interval;
+  proc->handler = f_addr;
+  // proc->ticks = 0;
+  return 0;
+}
+
+
+uint64 sys_sigreturn(void)
+{
+  struct proc * proc = myproc();
+  memmove(proc->trapframe, proc->backup_trapframe,512);
+  proc->ticks = 0;
+  return 0;
 }

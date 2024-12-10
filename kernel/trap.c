@@ -5,7 +5,6 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
 struct spinlock tickslock;
 uint ticks;
 
@@ -43,12 +42,14 @@ usertrap(void)
 
   // send interrupts and exceptions to kerneltrap(),
   // since we're now in the kernel.
-  w_stvec((uint64)kernelvec);
+  w_stvec((uint64)kernelvec); // 当前位于usertrap, 所以后续如果发生trap，意味着是kerneltrap
 
   struct proc *p = myproc();
   
   // save user program counter.
   p->trapframe->epc = r_sepc();
+
+
   
   if(r_scause() == 8){
     // system call
@@ -77,9 +78,15 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
-
+  if(which_dev == 2){
+    p->ticks++;
+    if(p->ticks == p->interval && 0 < p->interval){
+      memmove(p->backup_trapframe,p->trapframe,512);
+      p->trapframe->epc = p->handler;
+    }else{
+      yield();
+    }
+  }
   usertrapret();
 }
 
@@ -134,9 +141,10 @@ void
 kerneltrap()
 {
   int which_dev = 0;
-  uint64 sepc = r_sepc();
+  uint64 sepc = r_sepc(); 
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
+  // . * kerneltrap is prepared for two types of traps: device interrrupts and exceptions
   
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");

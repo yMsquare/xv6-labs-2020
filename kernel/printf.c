@@ -3,7 +3,7 @@
 //
 
 #include <stdarg.h>
-
+#include "stddef.h"
 #include "types.h"
 #include "param.h"
 #include "spinlock.h"
@@ -60,6 +60,8 @@ printptr(uint64 x)
 }
 
 // Print to the console. only understands %d, %x, %p, %s.
+//For debugging it is often useful to have a backtrace: 
+// a list of the function calls on the stack above the point at which the error occurred.
 void
 printf(char *fmt, ...)
 {
@@ -131,4 +133,22 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace(void){
+  printf("barcktrace:\n");
+
+  uint64 ra,fp = r_fp();//frame pointer -> address
+  uint64 pre_fp = *((uint64*)(fp - 16));
+
+  while(PGROUNDDOWN(fp)==PGROUNDDOWN(pre_fp)){
+    ra = *(uint64 *)(fp - 8);
+    printf("%p\n",ra);
+    fp = pre_fp;
+    pre_fp = *((uint64*)(fp - 16));
+  }
+
+  ra = *(uint64 *)(fp - 8);
+  printf("%p\n",ra);
 }
