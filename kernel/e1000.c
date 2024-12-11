@@ -2,12 +2,13 @@
 #include "param.h"
 #include "memlayout.h"
 #include "riscv.h"
+#include "defs.h"
 #include "spinlock.h"
 #include "proc.h"
-#include "defs.h"
 #include "e1000_dev.h"
 #include "net.h"
 
+void net_rx(struct mbuf *m);
 #define TX_RING_SIZE 16
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *tx_mbufs[TX_RING_SIZE];
@@ -95,6 +96,7 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(struct mbuf *m)
 {
+  // printf("e1000_transmit!\n");
   //
   // Your code here.
   //
@@ -102,19 +104,84 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock); // 加锁，保护共享数据结构
+  int td_index = regs[E1000_TDT];
+  // 暂存这个传入的mbuf
+  struct tx_desc * td_ptr;
+  // 读取 TDT 寄存器,获得tx_descriptor的尾部指针
+
+  td_ptr = &tx_ring[td_index];
+  // printf("td_ptr : %d, %p\n", regs[E1000_TDT],td_ptr);
+  if(!td_ptr){
+    // printf("null td_ptr!\n");
+    return -1;
+
+  }  
+  if(!(td_ptr->status & E1000_TXD_STAT_DD)){
+    // printf("not finished yet");
+    return -1;
+  }
+  if(tx_mbufs[td_index]){
+    mbuffree(tx_mbufs[td_index]);
+    tx_mbufs[td_index] = 0;
+    // printf("freed mbuf\n");
+  }
+  // 把一个descriptor的addr写成这个mbuf
+  td_ptr->addr = (uint64)m->head;
+  td_ptr->length = m->len;
+  td_ptr->cmd = 0b10001001;
+  // printf("data: %s,\n", td_ptr->addr);
+  // printf("len :%d \n", td_ptr->length);
+
+  tx_mbufs[td_index] = m;
+
+  regs[E1000_TDT]  = (regs[E1000_TDT]  + 1) % TX_RING_SIZE;
+  // printf("change regs to %d\n", regs[E1000_TDT]);
+  release(&e1000_lock); // 解锁
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
+  // printf("\ne1000_recv!\n");
   //
   // Your code here.
   //
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  struct rx_desc * rd_ptr;
+  int next_rindex;
+  while(1){
+    int next_rindex = (regs[E1000_RDT] + 1) % RX_RING_SIZE;   
+    rd_ptr = &rx_ring[next_rindex];
+    if (!(rd_ptr->status & E1000_RXD_STAT_DD)) {
+      // printf("not finished yet\n");
+      break;
+    }
+    struct mbuf * m = rx_mbufs[next_rindex];
+    if(!m){
+      // printf("not enought mbufs\n");
+      break;
+    }
+    m->len = rd_ptr->length;
+    net_rx(m);
+    // printf("sent to net_rx\n");
+
+    struct mbuf * new_mbuf = mbufalloc(0);
+    if(!new_mbuf){
+      printf("allocate new mbuf failed\n");
+      panic("mbuf");
+    }
+
+    rd_ptr->addr = (uint64)new_mbuf->head;
+    rd_ptr->length = 0;
+    rd_ptr->status = 0;
+
+    rx_mbufs[next_rindex] = new_mbuf;
+    regs[E1000_RDT] = next_rindex;
+  }
 }
 
 void
