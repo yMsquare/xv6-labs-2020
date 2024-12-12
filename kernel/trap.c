@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+// #include <signal.h>
 
 struct spinlock tickslock;
 uint ticks;
@@ -65,14 +66,39 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }else if (r_scause() == 13 || r_scause() == 15){
+    uint64 fault_addr = PGROUNDDOWN(r_stval());
+    if(fault_addr > p->sz){
+      p->killed = 1;
+      goto end;
+    }
+    // todo 没有处理错误的地址
+    if(fault_addr < PGROUNDUP(p->trapframe->sp)){
+      p->killed = 1;
+      goto end;
+    }
+    char *mem = kalloc();
+    if(mem == 0){
+      uvmdealloc(p->pagetable, fault_addr, fault_addr + PGSIZE);
+      p->killed = 1;
+      goto end;
+    }
+    memset(mem, 0, PGSIZE);
+    if(mappages(p->pagetable, fault_addr, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    kfree(mem);
+    p->killed = 1;
+    goto end;
+    }
+
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
+end:
   if(p->killed)
     exit(-1);
 
