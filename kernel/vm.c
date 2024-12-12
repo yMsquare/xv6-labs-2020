@@ -79,10 +79,13 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
-      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0) // allocate
+      {
+        // printf("walk allocated");
         return 0;
+      }
       memset(pagetable, 0, PGSIZE);
-      *pte = PA2PTE(pagetable) | PTE_V;
+      *pte = PA2PTE(pagetable) | PTE_V; // return the pte addr, with valid bit .
     }
   }
   return &pagetable[PX(0, va)];
@@ -101,12 +104,27 @@ walkaddr(pagetable_t pagetable, uint64 va)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
+  // if(pte == 0)
+  //   return 0;
+  // if((*pte & PTE_V) == 0)
+  //   return 0;
+  // if((*pte & PTE_U) == 0)
+  //   return 0;
+  // 我觉得这里应该引发一个trap，继续 lazy allocate ？
+  if(pte == 0 || (*pte & PTE_V) ==0){
+    char * mem = kalloc();
+    if(mem == 0){
+      return 0;
+    }
+    memset(mem, 0, PGSIZE);
+   if(mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem,  PTE_W|PTE_R|PTE_U) != 0 ){
+    kfree(mem);
     return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
+   }
+  }
   if((*pte & PTE_U) == 0)
     return 0;
+
   pa = PTE2PA(*pte);
   return pa;
 }
@@ -154,11 +172,15 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   a = PGROUNDDOWN(va);
   last = PGROUNDDOWN(va + size - 1);
   for(;;){
-    if((pte = walk(pagetable, a, 1)) == 0)
+    if((pte = walk(pagetable, a, 1)) == 0){
+    printf("mappages: allocate fail\n");
       return -1;
+    }
     if(*pte & PTE_V)
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
+
+    // printf("--mappages: allocate succeed, pa : %p, pte: %p\n",a,*pte);
     if(a == last)
       break;
     a += PGSIZE;
@@ -175,15 +197,22 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
   uint64 a;
   pte_t *pte;
+  // vmprint(pagetable);
 
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+    if((pte = walk(pagetable, a, 0)) == 0){
+      // this pte is allocated
+      continue;
+    }
+      // panic("uvmunmap: walk");
+    if((*pte & PTE_V) == 0){ // valid bit is 0 
+      // printf("uvmunmap : a : %p, va : %p, npages:%d, pte: %p\n",a,va, npages,*pte);
+      continue;
+      // panic("uvmunmap: not mapped");
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -231,7 +260,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   char *mem;
   uint64 a;
 
-  if(newsz < oldsz)
+ if(newsz < oldsz)
     return oldsz;
 
   oldsz = PGROUNDUP(oldsz);
@@ -282,7 +311,9 @@ freewalk(pagetable_t pagetable)
       uint64 child = PTE2PA(pte);
       freewalk((pagetable_t)child);
       pagetable[i] = 0;
-    } else if(pte & PTE_V){
+    }
+    else if(pte & PTE_V){
+      vmprint(pagetable);
       panic("freewalk: leaf");
     }
   }
@@ -294,8 +325,10 @@ freewalk(pagetable_t pagetable)
 void
 uvmfree(pagetable_t pagetable, uint64 sz)
 {
+  // printf("uvmfree: freeing pagetable: %p, sz : %d\n", pagetable, sz);
   if(sz > 0)
     uvmunmap(pagetable, 0, PGROUNDUP(sz)/PGSIZE, 1);
+  // printf("uvmfree: --- uvmunmap done\n");
   freewalk(pagetable);
 }
 
@@ -315,9 +348,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      continue;
+      // panic("uvmcopy: pte should exist");
+    if((*pte & PTE_V) == 0){
+      // panic("uvmcopy: page not present");
+      continue;
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -439,4 +475,42 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// 任务1
+// 使用递归进行打印，只打印有效的页表项（根据有效位）
+// 如果是非叶节点，则为：idx: [索引编号]: pa: [物理地址], flags: [四个权限位(r/w/x/u)]
+// 如果是叶子节点，则为：idx: [索引编号]: va: [虚拟地址] -> pa: [物理地址], flags: [四个权限位(r/w/x/u)
+//   // 递归出口：达到叶子页表项，返回即可
+void vmprint_recursive(pagetable_t pgtbl, int level, uint64 va_base) {
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pgtbl[i];
+    if (pte & PTE_V) {
+      // 打印缩进：每级添加 "||" 后仅加 3 个空格
+      for (int j = 0; j < level; j++) {
+        printf("||   ");
+      }
+      uint64 current_va = va_base | ((uint64)i << (12 + 9 * (2 - level)));
+
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        // 非叶节点 - 指向下一级页表的基地址
+        uint64 child = PTE2PA(pte);
+        printf("||idx: %d: pa: %p, flags: %s%s%s%s\n", i, (void *)child,
+               (pte & PTE_R) ? "r" : "-", (pte & PTE_W) ? "w" : "-", (pte & PTE_X) ? "x" : "-",
+               (pte & PTE_U) ? "u" : "-");
+        vmprint_recursive((pagetable_t)child, level + 1, current_va);
+      } else {
+        // 叶节点 - 包含实际映射
+        uint64 pa = PTE2PA(pte);
+        printf("||idx: %d: va: %p -> pa: %p, flags: %s%s%s%s\n", i, (void *)current_va, (void *)pa,
+               (pte & PTE_R) ? "r" : "-", (pte & PTE_W) ? "w" : "-", (pte & PTE_X) ? "x" : "-",
+               (pte & PTE_U) ? "u" : "-");
+      }
+    }
+  }
+}
+
+void vmprint(pagetable_t pgtbl) {
+  printf("page table %p\n", pgtbl);
+  vmprint_recursive(pgtbl, 0, 0);
 }

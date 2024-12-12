@@ -177,6 +177,7 @@ proc_pagetable(struct proc *p)
   // map the trapframe just below TRAMPOLINE, for trampoline.S.
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
+                printf("error in proc_pagetable\n");
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
     return 0;
@@ -190,9 +191,13 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
+  printf("proc_freepagetable\n");
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
+  printf("proc_freepagetable---uvmnnmapped trampoline\n");
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  printf("proc_freepagetable---uvmnnmapped trapframe\n");
   uvmfree(pagetable, sz);
+  printf("proc_freepagetable---uvmfreed\n");
 }
 
 // a user program that calls exec("/init")

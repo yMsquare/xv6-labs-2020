@@ -65,7 +65,27 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  }else if(r_scause() == 0xf || r_scause() == 0xd) {
+    // printf("lazy \n");
+    uint64 fault_addr = PGROUNDDOWN(r_stval());
+    char* mem;
+    mem = kalloc();
+    // printf("kalloced, pid : %d, mem:  %p\n", p->pid, mem);
+    // vmprint(p->pagetable);
+    if(mem == 0){
+      printf("m = 0\n");
+      uvmdealloc(p->pagetable,fault_addr,fault_addr + PGSIZE);
+    }
+    memset(mem, 0, PGSIZE);
+    if(mappages(p->pagetable,fault_addr, PGSIZE,(uint64)mem,PTE_W|PTE_X|PTE_R|PTE_U)!=0){
+      printf("mappages error \n");
+      kfree(mem);
+      p->killed = 1;
+      // uvmdealloc(p->pagetable,fault_addr,fault_addr+PGSIZE);
+    }
+    // printf("\nafter mappages:\n");
+    // vmprint(p->pagetable);
+  }else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
