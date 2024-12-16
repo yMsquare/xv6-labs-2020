@@ -65,7 +65,19 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if(r_scause() == 15){
+    uint64 faulting_va = PGROUNDDOWN(r_stval());
+    pte_t * pte = walk(p->pagetable,faulting_va,0);
+    // todo : if COW page
+   if(faulting_va >= p->sz
+    // 如果第二个条件不满足,说明当前发生的是COW写入错误
+    || cowpage(p->pagetable, faulting_va) != 0
+    // 当前发生COW写入错误时,继续进入到第三个判断
+    // 该判断负责处理COW写入错误,即分配一个新页面
+    || cowalloc(p->pagetable, PGROUNDDOWN(faulting_va)) == 0)
+    p->killed = 1;
+  }
+  else if((which_dev = devintr()) != 0){
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
