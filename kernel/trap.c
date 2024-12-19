@@ -5,11 +5,18 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "vma.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+
+
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -65,14 +72,17 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
+  } else if(r_scause() == 13 || r_scause() == 15){
+    if(vma_handler(r_stval(),r_scause())!= 0){
+      p->killed = 1;
+    }
+  } else if ((which_dev = devintr()) != 0) {
     // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
-
   if(p->killed)
     exit(-1);
 
@@ -218,3 +228,62 @@ devintr()
   }
 }
 
+int
+read_file(struct file *f,uint64 user_dst, uint64 dst, int offset, int size ){
+  ilock(f->ip);
+  int ret = readi(f->ip, user_dst, dst , offset, size);
+  iunlock(f->ip);
+  return ret;
+}
+
+uint64 
+vma_handler(uint64 addr, uint64 cause )
+{
+  printf("handler:allocating for addr %p\n",addr);
+  struct proc * p = myproc();
+  // todo : 循环遍历当前进程的vma链表，找到包含指定虚拟地址va的vma区域
+  struct VMA * vma = p->vma;
+  if (vma == 0) {
+    // printf("handler : null vma!\n");
+    return -1;
+  };
+  while (vma != 0) {
+    if(vma->in_use && addr >= vma->addr && addr < vma->addr_end){
+      break;
+    }
+    vma = vma->next;
+  }
+
+  if(cause == 13 && !(vma->prot & PTE_R)){
+    printf("read permission error in addr : %p \n", addr);
+    return   -1;
+  }
+
+  if(cause == 15 && !(vma->prot & PTE_W)){
+    printf("write permission error in addr : %p \n", addr);
+    return -1;
+  }
+  
+  // todo : 根据权限和要求，分配对应权限的物理页面。
+  char * mem = kalloc();
+  if (mem == 0){
+    // printf("kalloc failed in vma_handler \n");
+    return -1;
+  }
+  // printf("---handler : physical mem allocated\n");
+
+  memset(mem, 0, PGSIZE);
+
+  uint64 va = PGROUNDDOWN(addr); // todo 
+  // printf("---handler : mappage : va %p\n", va);
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, vma->prot|PTE_U|PTE_X)!=0){
+    kfree(mem);
+    return -1;
+  }
+  // printf("mmap done");
+  
+  // todo : 读入文件
+  read_file(vma->f, 0,(uint64)mem,va-vma->addr, PGSIZE);// ! kernel addr
+  return 0;
+  
+}

@@ -1,3 +1,4 @@
+#include "types.h"
 struct buf;
 struct context;
 struct file;
@@ -146,7 +147,7 @@ void            trapinit(void);
 void            trapinithart(void);
 extern struct spinlock tickslock;
 void            usertrapret(void);
-
+uint64 vma_handler(uint64 addr, uint64 cause );
 // uart.c
 void            uartinit(void);
 void            uartintr(void);
@@ -183,5 +184,13 @@ void            virtio_disk_init(void);
 void            virtio_disk_rw(struct buf *, int);
 void            virtio_disk_intr(void);
 
+
+// vma.c
+void vma_init();
+struct VMA * find_vma(uint64 addr);
+int mmap_write(struct file *f, uint64 addr, uint64 n ) ;
+struct VMA *
+alloc_vma();
+int dealloc_vma(struct VMA * vma);
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

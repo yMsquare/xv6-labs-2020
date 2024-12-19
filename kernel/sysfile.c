@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "vma.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -482,5 +483,139 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_mmap(void){
+  uint64 addr;
+  int length;
+  int prot;
+  int flags;
+  int fd;
+  int offset;
+  argaddr(0,&addr);
+  argint(1,&length);
+  argint(2,&prot);
+  argint(3,&flags);
+  argint(4,&fd);
+  argint(5,&offset);
+
+  struct proc * p = myproc();
+  struct file * f = p->ofile[fd];
+
+  if(addr != 0) panic("sys_mmap");
+  if(offset != 0) panic("sys_mmap");
+
+  if((!f->writable) && (prot & PROT_WRITE) && (flags & MAP_SHARED))
+  {
+    return -1;
+  }
+  if(!f->readable && prot & PROT_READ)return -1;
+
+  struct VMA * vma = alloc_vma(addr);
+  if( !vma) {printf("no vma in mmap!\n");
+  return -1;}
+
+  vma->prot =
+      ((prot & PROT_READ) ? PTE_R : 0) | ((prot & PROT_WRITE) ? PTE_W : 0);
+  vma->flags =  (flags & MAP_SHARED)? 1: 0;
+  vma->f = f;
+  filedup(f);
+
+  vma->next = p->vma;
+  p->vma = vma;
+  
+  // printf("now p->min_addr : %p\n",p->min_addr);
+  uint64  vmaddr = PGROUNDDOWN(p->min_addr-length);
+  if(vmaddr % PGSIZE != 0)  panic("sys_mmap");
+
+  // 映射地址
+  vma->addr = vmaddr;
+  vma->length = length;
+  vma->addr_end = p->min_addr;
+  p->min_addr = vmaddr;
+  // printf("!! sys_mmap :length : %d, p->min_addr changed to vmaddr : %p\n", length,vmaddr);
+  printf("mmap: [%p, %p)\n", vmaddr, vma->addr_end);
+  // printf("return\n");
+  return vmaddr;
+  return -1;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  argaddr(0, &addr);
+  argint(1, &length);
+  // todo 找到对应区域的vma
+  struct proc * p = myproc();
+  struct VMA * vma  = p->vma;
+  // printf("--p->vma at first : %p, addr : %p, end : %p, in_use: %d\n",vma,vma->addr,vma->addr+vma->length,vma->in_use);
+  struct VMA * pre =0;
+  // printf("-----------unmap\n");
+  // printf("-- unmap : addr :%p, length : %d\n\n", addr, length);
+  uint64 start = (addr);
+  uint64 end  = (addr+length);
+  uint64 round_end  = PGROUNDUP(addr+length);
+  uint64 round_start = PGROUNDDOWN(addr);
+  // printf("round_start:%p,end:%p\n",round_start,round_end);
+  while(vma != 0){
+    // printf("--p->vma in loop : %p, addr : %p, end : %p, in_use: %d\n",vma,vma->addr,vma->addr+vma->length,vma->in_use);
+    if(vma->in_use && (vma->addr <= round_start) && (round_end <= PGROUNDUP(vma->addr + vma->length))){
+      break;
+    }
+    pre = vma;
+    vma = vma->next;
+  }
+  if(!vma){
+    printf("no vma !\n");
+    return -1;}
+  
+  // todo 若打开了文件，要写回磁盘
+  // * modified, MAP_SHARED ---> filewrite
+  // printf("round_start : %p", round_start);
+  // printf("n : %d", round_end - round_start);
+
+
+  printf("--writing back to disk \n");
+  if(vma->flags && (vma->prot | PTE_W)){
+    // 写回磁盘
+    printf("----------mmap_write----------\n");
+    // printf("f:%p, addr:%p,n:%d\n",vma->f,round_start,round_end-round_start);
+    printf("ret :%d\n",mmap_write(vma->f, round_start, round_end-round_start));
+  }
+  printf("unmapping pagetable\n");
+  // uvmunmap 页表映射
+   // 解除页表的映射
+  for(uint64 i = addr; i < addr + vma->length; i += PGSIZE){
+    if(walkaddr(p->pagetable, i)){
+      uvmunmap(p->pagetable, i, 1, 1);
+    }
+  }
+  // todo 减少文件的引用次数
+  if (vma->addr == round_start && round_end < vma->addr_end) {
+    // vma->addr += length;
+    // vma->addr = PGROUNDDOWN(vma->addr);
+    // vma->length -= length;
+    vma->addr = round_end;
+    vma->length -= length;
+  } else if (vma->addr < round_start && round_end == vma->addr_end) {
+    // vma->length -= length;
+    vma->addr_end = PGROUNDUP(addr);
+  } else if (vma->addr == round_start && PGROUNDUP(vma->addr + vma->length) == round_end) {
+    if (pre) {
+      pre->next = vma->next;
+    } else {
+      p->vma = vma->next;
+    }
+    fileclose(vma->f);
+    dealloc_vma(vma);
+  } else {
+    printf("Error: unsupported unmap range\n");
+    return -1;
+  }
+
   return 0;
 }

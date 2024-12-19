@@ -373,7 +373,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if(pa0 == 0) // ! pa0 == 0
       return -1;
     n = PGSIZE - (srcva - va0);
     if(n > len)

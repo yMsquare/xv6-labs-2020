@@ -5,9 +5,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
-
+#include "vma.h"
 struct cpu cpus[NCPU];
-
+VMAlist vmalist;
 struct proc proc[NPROC];
 
 struct proc *initproc;
@@ -48,6 +48,7 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
       p->kstack = KSTACK((int) (p - proc));
+      p->min_addr = TRAPFRAME;
   }
 }
 
@@ -289,7 +290,7 @@ fork(void)
 
   // Cause fork to return 0 in the child.
   np->trapframe->a0 = 0;
-
+  
   // increment reference counts on open file descriptors.
   for(i = 0; i < NOFILE; i++)
     if(p->ofile[i])
@@ -300,6 +301,45 @@ fork(void)
 
   pid = np->pid;
 
+  np->vma = 0;
+  struct VMA *pv = p->vma;
+  struct VMA *pre = 0;
+  while(pv){
+    struct VMA *vma = alloc_vma();
+    *vma = *pv;
+    filedup(vma->f);		//增加VMA结构的引用计数
+    vma->next = 0;
+    if(pre == 0){
+      np->vma = vma;
+    }else{
+      pre->next = vma;
+      vma->next = 0;
+    }
+    pre = vma;
+    pv = pv->next;
+  }
+  // np->vma = 0;
+  // struct VMA * pre_vma = 0;
+  // struct VMA * vma = p->vma;
+  // while(vma !=0){
+  //   struct VMA *nvma = alloc_vma();
+  //   nvma->addr = vma->addr;
+  //   nvma->addr_end = vma->addr_end;
+  //   nvma->prot = vma->prot;
+  //   nvma->flags = vma->flags;
+  //   nvma->f = vma->f;
+  //   nvma->fd = vma->fd;
+  //   filedup(nvma->f);		//增加VMA结构的引用计数
+  //   nvma->next = 0;
+  //   if(pre_vma == 0){
+  //     np->vma = nvma;
+  //   }else{
+  //     pre_vma->next = nvma;
+  //     vma->next = 0;
+  //   }
+  //   pre_vma = nvma;
+  //   vma = vma->next;
+  // }
   np->state = RUNNABLE;
 
   release(&np->lock);
@@ -343,7 +383,22 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
-
+  // munmap all mmap vma
+  struct VMA *vma = 0; 
+  struct VMA *nextvma = 0;
+  for(vma = p->vma; vma; vma = nextvma){
+    nextvma = vma->next;
+    // 扫描当前VMA节点中的所有物理页面，将其从进程p的页表中删除
+    for(uint64 i = vma->addr; i < vma->addr + vma->length; i += PGSIZE)
+      if(walkaddr(p->pagetable, i)){
+        uvmunmap(p->pagetable, i, 1, 1);
+      }
+    vma->next = 0;
+    fileclose(vma->f);   // 关闭当前VMA节点关联的文件
+    dealloc_vma(vma);       // 释放当前VMA节点所占用的内存空间
+  }
+  // 链表头置空
+  p->vma = 0;
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){
@@ -393,6 +448,7 @@ exit(int status)
   p->state = ZOMBIE;
 
   release(&original_parent->lock);
+
 
   // Jump into the scheduler, never to return.
   sched();
@@ -666,7 +722,7 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
 {
   struct proc *p = myproc();
   if(user_src){
-    return copyin(p->pagetable, dst, src, len);
+    return copyin(p->pagetable, dst, src, len); // ! copyin returns -1
   } else {
     memmove(dst, (char*)src, len);
     return 0;
